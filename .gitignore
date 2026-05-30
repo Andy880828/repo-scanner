@@ -5,6 +5,9 @@ results/
 reports/
 output/
 
+# 測試樣本（含刻意植入的假密鑰與注入 payload，不入庫以免污染 repo / 誤報）
+testsample/
+
 # 環境變數
 .env
 .env.*

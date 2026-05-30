@@ -1,8 +1,14 @@
+# 供「單獨執行某個工具」使用；完整平行掃描請用 scan.ps1
+# 用法（PowerShell）:
+#   $env:SCAN_TARGET = "C:\path\to\repo"
+#   docker compose run --rm trivy
+
 services:
   trivy:
     image: aquasec/trivy:latest
     volumes:
       - ${SCAN_TARGET}:/repo
+      - ${USERPROFILE}/.cache/trivy:/root/.cache/trivy   # 漏洞 DB 快取，避免每次重抓
     command: fs /repo --scanners vuln,secret,misconfig --exit-code 0
 
   semgrep:
@@ -15,4 +21,10 @@ services:
     image: zricethezav/gitleaks:latest
     volumes:
       - ${SCAN_TARGET}:/path
-    command: detect --source /path --no-git
+    command: detect --source /path --no-git --exit-code 0
+
+  osv:
+    image: ghcr.io/google/osv-scanner:latest
+    volumes:
+      - ${SCAN_TARGET}:/repo
+    command: scan source -r /repo

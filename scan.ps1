@@ -1,21 +1,24 @@
-# repo-scanner/scan.ps1
-# 用法: .\scan.ps1 -Target "C:\path\to\repo"
-# 用法: .\scan.ps1  (不帶參數則掃描目前目錄)
+﻿# repo-scanner/scan.ps1
+# 整合 Trivy / Semgrep / Gitleaks / OSV-Scanner + 提示詞注入偵測的安全掃描器
+#
+# 用法:
+#   .\scan.ps1 -Target "C:\path\to\repo"
+#   .\scan.ps1                       # 掃描目前目錄
+#   .\scan.ps1 -Target ... -SkipDbUpdate   # Trivy 跳過 DB 更新（更快，需先跑過一次）
 
 param(
-    [string]$Target = (Get-Location).Path
+    [string]$Target = (Get-Location).Path,
+    [switch]$SkipDbUpdate
 )
 
-# 將 Windows 路徑轉為 Docker 可用格式 (e.g. C:\foo -> /c/foo)
-function ConvertTo-DockerPath {
-    param([string]$WinPath)
-    $resolved = (Resolve-Path $WinPath).Path
-    $drive = $resolved.Substring(0, 1).ToLower()
-    $rest = $resolved.Substring(2) -replace '\\', '/'
-    return "/$drive$rest"
-}
+# 注意：不用 'Stop' — docker.exe 的 stderr 警告（如 DOCKER_INSECURE_NO_IPTABLES_RAW）
+# 在 Stop 模式會被包成 NativeCommandError 誤觸終止。改靠 $LASTEXITCODE 顯式判斷成敗。
+$ErrorActionPreference = 'Continue'
 
-$DockerTarget = ConvertTo-DockerPath $Target
+# ── 載入 lib 模組 ────────────────────────────────────────────────────────────
+. (Join-Path $PSScriptRoot 'lib\Common.ps1')
+. (Join-Path $PSScriptRoot 'lib\PromptInjection.ps1')
+. (Join-Path $PSScriptRoot 'lib\Report.ps1')
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
@@ -24,78 +27,105 @@ Write-Host " 掃描目標: $Target" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# ── 1. Trivy：漏洞 + Secrets + 設定錯誤 ──────────────────────────────────────
-Write-Host "[1/4] Trivy 漏洞掃描..." -ForegroundColor Yellow
-docker run --rm `
-    -v "${DockerTarget}:/repo" `
-    aquasec/trivy:latest fs /repo `
-    --scanners vuln,secret,misconfig `
-    --exit-code 0
-Write-Host ""
+# ── Preflight ────────────────────────────────────────────────────────────────
+if (-not (Test-Path $Target)) {
+    Write-Host "[ERROR] 找不到掃描目標: $Target" -ForegroundColor Red
+    exit 2
+}
+if (-not (Test-DockerRunning)) { exit 2 }
+if (-not (Confirm-ScannerImages $Global:ScannerImages)) { exit 2 }
 
-# ── 2. Semgrep：靜態程式碼分析 ───────────────────────────────────────────────
-Write-Host "[2/4] Semgrep 靜態分析..." -ForegroundColor Yellow
-docker run --rm `
-    -v "${DockerTarget}:/src" `
-    returntocorp/semgrep:latest `
-    semgrep --config=p/security-audit --config=p/secrets `
-    --no-git-ignore `
-    /src
-Write-Host ""
+$cacheDir = Initialize-TrivyCache
 
-# ── 3. Gitleaks：Hardcoded Token / Secret ────────────────────────────────────
-Write-Host "[3/4] Gitleaks Secret 偵測..." -ForegroundColor Yellow
-docker run --rm `
-    -v "${DockerTarget}:/path" `
-    zricethezav/gitleaks:latest `
-    detect --source /path --no-git
-Write-Host ""
+# 結果目錄
+$resultsDir = Join-Path $PSScriptRoot 'results'
+New-Item -ItemType Directory -Path $resultsDir -Force | Out-Null
+Get-ChildItem -Path $resultsDir -Filter '*.json' -ErrorAction SilentlyContinue | Remove-Item -Force
 
-# ── 4. 提示詞注入 Pattern 掃描 ───────────────────────────────────────────────
-Write-Host "[4/4] 提示詞注入 Pattern 掃描..." -ForegroundColor Yellow
+# Docker 掛載路徑（Windows → /c/... 格式）
+$dTarget  = ConvertTo-DockerPath $Target
+$dResults = ConvertTo-DockerPath $resultsDir
+$dCache   = ConvertTo-DockerPath $cacheDir
 
-$injectionPatterns = @(
-    "ignore previous instructions",
-    "disregard (your|all|the) instructions",
-    "override system",
-    "you are now",
-    "forget your",
-    "ignore your",
-    "do not follow",
-    "bypass",
-    "jailbreak",
-    "DAN mode",
-    "pretend you",
-    "act as if",
-    "<!-- inject",
-    "\[INST\]",
-    "<\|system\|>"
+# ── 平行啟動四個容器（各自寫 JSON 到 /out）────────────────────────────────────
+Write-Host "[scan] 平行啟動 Trivy / Semgrep / Gitleaks / OSV..." -ForegroundColor Yellow
+
+$trivyArgs = @(
+    'run','--rm',
+    '-v',"${dTarget}:/repo",
+    '-v',"${dResults}:/out",
+    '-v',"${dCache}:/root/.cache/trivy",
+    $Global:ScannerImages.Trivy,
+    'fs','/repo','--scanners','vuln,secret,misconfig',
+    '--format','json','--output','/out/trivy.json','--exit-code','0'
+)
+if ($SkipDbUpdate) { $trivyArgs += '--skip-db-update' }
+
+$semgrepArgs = @(
+    'run','--rm',
+    '-v',"${dTarget}:/src",
+    '-v',"${dResults}:/out",
+    $Global:ScannerImages.Semgrep,
+    'semgrep','--config=p/security-audit','--config=p/secrets',
+    '--no-git-ignore','--json','--output','/out/semgrep.json','/src'
 )
 
-$extensions = @("*.md","*.txt","*.json","*.yaml","*.yml","*.html","*.rst","*.csv","*.xml")
-$found = $false
+$gitleaksArgs = @(
+    'run','--rm',
+    '-v',"${dTarget}:/path",
+    '-v',"${dResults}:/out",
+    $Global:ScannerImages.Gitleaks,
+    'detect','--source','/path','--no-git',
+    '--report-format','json','--report-path','/out/gitleaks.json','--exit-code','0'
+)
 
-foreach ($ext in $extensions) {
-    Get-ChildItem -Path $Target -Recurse -Filter $ext -ErrorAction SilentlyContinue | ForEach-Object {
-        $file = $_
-        $content = Get-Content $file.FullName -Raw -ErrorAction SilentlyContinue
-        if ($content) {
-            foreach ($pattern in $injectionPatterns) {
-                if ($content -imatch $pattern) {
-                    Write-Host "[WARN] 疑似提示詞注入: $($file.FullName)" -ForegroundColor Red
-                    Write-Host "       匹配 pattern: $pattern" -ForegroundColor DarkRed
-                    $found = $true
-                }
-            }
-        }
+$osvArgs = @(
+    'run','--rm',
+    '-v',"${dTarget}:/repo",
+    '-v',"${dResults}:/out",
+    $Global:ScannerImages.Osv,
+    'scan','source','-r','/repo','--format','json','--output','/out/osv.json'
+)
+
+$jobDef = { param($dockerArgs) & docker @dockerArgs 2>&1 }
+
+$jobs = @(
+    Start-Job -Name 'Trivy'    -ScriptBlock $jobDef -ArgumentList (,$trivyArgs)
+    Start-Job -Name 'Semgrep'  -ScriptBlock $jobDef -ArgumentList (,$semgrepArgs)
+    Start-Job -Name 'Gitleaks' -ScriptBlock $jobDef -ArgumentList (,$gitleaksArgs)
+    Start-Job -Name 'OSV'      -ScriptBlock $jobDef -ArgumentList (,$osvArgs)
+)
+
+# ── 容器執行中，同時跑本機注入掃描 ──────────────────────────────────────────
+Write-Host "[scan] 提示詞注入掃描中（本機）..." -ForegroundColor Yellow
+$injection = Invoke-PromptInjectionScan -Target $Target
+
+# ── 等待所有容器收斂 ────────────────────────────────────────────────────────
+Write-Host "[scan] 等待容器掃描完成..." -ForegroundColor Yellow
+$null = Wait-Job -Job $jobs
+foreach ($j in $jobs) {
+    if ($j.State -eq 'Failed') {
+        Write-Host "[WARN] $($j.Name) 任務失敗（報告中該工具將顯示 0 發現）" -ForegroundColor DarkYellow
     }
+    Receive-Job -Job $j *> $null
 }
+Remove-Job -Job $jobs -Force
 
-if (-not $found) {
-    Write-Host "[OK] 未發現已知提示詞注入 pattern" -ForegroundColor Green
-}
+# ── 產生彙整報告 ────────────────────────────────────────────────────────────
+Write-Host "[scan] 產生彙整報告..." -ForegroundColor Yellow
+$report = New-ScanReport -Target $Target -ResultsDir $resultsDir -InjectionFindings $injection
 
+# ── Console 摘要 ────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host " 掃描完成！" -ForegroundColor Green
+Write-Host " 掃描完成" -ForegroundColor Green
+Write-Host " 總發現數    : $($report.TotalFindings)" -ForegroundColor White
+Write-Host " 最高嚴重度  : $($report.HighestSeverity)" -ForegroundColor White
+Write-Host " 報告        : $($report.ReportPath)" -ForegroundColor White
 Write-Host "========================================" -ForegroundColor Cyan
+
+# exit code 反映嚴重度（保留 CI 相容性）
+if ($Global:SeverityRank[$report.HighestSeverity] -ge $Global:SeverityRank['HIGH']) {
+    exit 1
+}
+exit 0
