@@ -1,0 +1,18 @@
+services:
+  trivy:
+    image: aquasec/trivy:latest
+    volumes:
+      - ${SCAN_TARGET}:/repo
+    command: fs /repo --scanners vuln,secret,misconfig --exit-code 0
+
+  semgrep:
+    image: returntocorp/semgrep:latest
+    volumes:
+      - ${SCAN_TARGET}:/src
+    command: semgrep --config=p/security-audit --config=p/secrets --no-git-ignore /src
+
+  gitleaks:
+    image: zricethezav/gitleaks:latest
+    volumes:
+      - ${SCAN_TARGET}:/path
+    command: detect --source /path --no-git
