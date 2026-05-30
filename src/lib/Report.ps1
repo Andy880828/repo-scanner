@@ -26,7 +26,8 @@ function Get-HighestSeverity {
 function Read-JsonFile {
     param([string]$Path)
     if (-not (Test-Path $Path)) { return $null }
-    $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue
+    # -Encoding UTF8：工具輸出可能含非 ASCII（描述、unicode 路徑），PS 5.1 預設 ANSI 會破壞內容
+    $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
     if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
     try { return $raw | ConvertFrom-Json } catch { return $null }
 }

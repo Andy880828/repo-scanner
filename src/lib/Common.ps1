@@ -1,13 +1,29 @@
-﻿# lib/Common.ps1
-# 共用工具：Docker 路徑轉換、preflight 檢查、image 確認
+﻿# src/lib/Common.ps1
+# 共用工具：掃描器設定載入、Docker 路徑轉換、preflight 檢查、image 確認
 # 由 scan.ps1 透過 dot-source 載入
 
-# 掃描所需的 Docker image 清單（單一事實來源）
-$Global:ScannerImages = @{
-    Trivy    = 'aquasec/trivy:latest'
-    Semgrep  = 'returntocorp/semgrep:latest'
-    Gitleaks = 'zricethezav/gitleaks:latest'
-    Osv      = 'ghcr.io/google/osv-scanner:latest'
+# 從 config/scanners.json 載入掃描器定義（image / output / description）。
+# 抽離成資料檔，讓未來跨平台核心（GUI）能共用同一份定義。
+# 回傳：name → { image, output, description } 的物件陣列。
+function Get-ScannerConfig {
+    param([Parameter(Mandatory)][string]$ConfigPath)
+    if (-not (Test-Path $ConfigPath)) {
+        throw "找不到掃描器設定檔: $ConfigPath"
+    }
+    # 必須指定 -Encoding UTF8：PS 5.1 的 Get-Content 預設用 ANSI(CP950)，會破壞中文 → JSON 解析失敗
+    $json = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not $json.scanners) {
+        throw "設定檔格式錯誤：缺少 'scanners' 陣列"
+    }
+    return $json.scanners
+}
+
+# 由掃描器定義陣列建立 name → image 的查找表
+function Get-ImageMap {
+    param([Parameter(Mandatory)][object[]]$Scanners)
+    $map = @{}
+    foreach ($s in $Scanners) { $map[$s.name] = $s.image }
+    return $map
 }
 
 # 將 Windows 路徑轉為 Docker 可掛載格式 (e.g. C:\foo -> /c/foo)
@@ -34,16 +50,15 @@ function Test-DockerRunning {
 
 # 確認所需 image 已存在，缺的自動 pull（避免 pull 進度噪音混入掃描輸出）
 function Confirm-ScannerImages {
-    param([Parameter(Mandatory)][hashtable]$Images)
+    param([Parameter(Mandatory)][object[]]$Scanners)
 
-    foreach ($name in $Images.Keys) {
-        $image = $Images[$name]
-        docker image inspect $image *> $null
+    foreach ($s in $Scanners) {
+        docker image inspect $s.image *> $null
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "[preflight] 拉取 $name image ($image)..." -ForegroundColor DarkGray
-            docker pull $image
+            Write-Host "[preflight] 拉取 $($s.name) image ($($s.image))..." -ForegroundColor DarkGray
+            docker pull $s.image
             if ($LASTEXITCODE -ne 0) {
-                Write-Host "[ERROR] 無法拉取 $image" -ForegroundColor Red
+                Write-Host "[ERROR] 無法拉取 $($s.image)" -ForegroundColor Red
                 return $false
             }
         }

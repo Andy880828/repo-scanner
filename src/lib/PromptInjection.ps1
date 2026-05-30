@@ -97,8 +97,10 @@ function Invoke-PromptInjectionScan {
         $isCode = $file.Extension -in $Global:CodeExtensions
         $isAiConfig = $file.Name -in $Global:AiConfigNames
 
-        # 每個檔案只讀一次（取代舊版巢狀重複讀檔）
-        $lines = Get-Content -LiteralPath $file.FullName -ErrorAction SilentlyContinue
+        # 每個檔案只讀一次（取代舊版巢狀重複讀檔）。
+        # -Encoding UTF8：偵測隱藏 Unicode 字元的前提是正確以 UTF-8 解讀；
+        # PS 5.1 預設 ANSI 會把多位元組字元（含 U+200B 等）誤判而漏抓。
+        $lines = Get-Content -LiteralPath $file.FullName -Encoding UTF8 -ErrorAction SilentlyContinue
         if (-not $lines) { continue }
 
         $lineNo = 0

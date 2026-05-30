@@ -16,9 +16,13 @@ param(
 $ErrorActionPreference = 'Continue'
 
 # ── 載入 lib 模組 ────────────────────────────────────────────────────────────
-. (Join-Path $PSScriptRoot 'lib\Common.ps1')
-. (Join-Path $PSScriptRoot 'lib\PromptInjection.ps1')
-. (Join-Path $PSScriptRoot 'lib\Report.ps1')
+. (Join-Path $PSScriptRoot 'src\lib\Common.ps1')
+. (Join-Path $PSScriptRoot 'src\lib\PromptInjection.ps1')
+. (Join-Path $PSScriptRoot 'src\lib\Report.ps1')
+
+# 掃描器定義（image / output）抽離於 config/scanners.json
+$scanners = Get-ScannerConfig (Join-Path $PSScriptRoot 'config\scanners.json')
+$img = Get-ImageMap $scanners
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
@@ -33,7 +37,7 @@ if (-not (Test-Path $Target)) {
     exit 2
 }
 if (-not (Test-DockerRunning)) { exit 2 }
-if (-not (Confirm-ScannerImages $Global:ScannerImages)) { exit 2 }
+if (-not (Confirm-ScannerImages $scanners)) { exit 2 }
 
 $cacheDir = Initialize-TrivyCache
 
@@ -55,7 +59,7 @@ $trivyArgs = @(
     '-v',"${dTarget}:/repo",
     '-v',"${dResults}:/out",
     '-v',"${dCache}:/root/.cache/trivy",
-    $Global:ScannerImages.Trivy,
+    $img.Trivy,
     'fs','/repo','--scanners','vuln,secret,misconfig',
     '--format','json','--output','/out/trivy.json','--exit-code','0'
 )
@@ -65,7 +69,7 @@ $semgrepArgs = @(
     'run','--rm',
     '-v',"${dTarget}:/src",
     '-v',"${dResults}:/out",
-    $Global:ScannerImages.Semgrep,
+    $img.Semgrep,
     'semgrep','--config=p/security-audit','--config=p/secrets',
     '--no-git-ignore','--json','--output','/out/semgrep.json','/src'
 )
@@ -74,7 +78,7 @@ $gitleaksArgs = @(
     'run','--rm',
     '-v',"${dTarget}:/path",
     '-v',"${dResults}:/out",
-    $Global:ScannerImages.Gitleaks,
+    $img.Gitleaks,
     'detect','--source','/path','--no-git',
     '--report-format','json','--report-path','/out/gitleaks.json','--exit-code','0'
 )
@@ -83,7 +87,7 @@ $osvArgs = @(
     'run','--rm',
     '-v',"${dTarget}:/repo",
     '-v',"${dResults}:/out",
-    $Global:ScannerImages.Osv,
+    $img.Osv,
     'scan','source','-r','/repo','--format','json','--output','/out/osv.json'
 )
 

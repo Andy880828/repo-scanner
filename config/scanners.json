@@ -1,0 +1,28 @@
+{
+  "scanners": [
+    {
+      "name": "Trivy",
+      "image": "aquasec/trivy:latest",
+      "output": "trivy.json",
+      "description": "CVE 漏洞、hardcoded secrets、設定錯誤"
+    },
+    {
+      "name": "Semgrep",
+      "image": "returntocorp/semgrep:latest",
+      "output": "semgrep.json",
+      "description": "靜態程式碼安全分析、注入漏洞"
+    },
+    {
+      "name": "Gitleaks",
+      "image": "zricethezav/gitleaks:latest",
+      "output": "gitleaks.json",
+      "description": "API key、token、密碼外洩"
+    },
+    {
+      "name": "Osv",
+      "image": "ghcr.io/google/osv-scanner:latest",
+      "output": "osv.json",
+      "description": "lockfile 感知的依賴漏洞"
+    }
+  ]
+}

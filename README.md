@@ -54,15 +54,34 @@ docker compose run --rm trivy     # 或 semgrep / gitleaks / osv
 - **exit code**：最高嚴重度達 HIGH 以上回傳 `1`，否則 `0`（方便日後接 CI）。
 - 程式碼註解中的注入關鍵字誤判率較高，報告中標記為「需人工確認」。
 
+## 測試
+
+單元測試用 Pester 5（純邏輯，不需 Docker）：
+
+```powershell
+# 首次需安裝 Pester 5
+Install-Module Pester -Scope CurrentUser -MinimumVersion 5.0 -Force -SkipPublisherCheck
+
+.\tests\Invoke-Tests.ps1        # 跑全部測試
+.\tests\Invoke-Tests.ps1 -CI    # 失敗時非 0 結束（供 CI）
+```
+
 ## 結構
 
 ```
 repo-scanner/
-├── scan.ps1                  # 協調器：preflight → 平行掃描 → 彙整報告
-├── lib/
-│   ├── Common.ps1            # 路徑轉換 + preflight + image 確認
+├── scan.ps1                  # CLI 進入點：preflight → 平行掃描 → 彙整報告
+├── config/
+│   └── scanners.json         # 掃描器定義（image/output）— 資料而非程式碼
+├── src/lib/
+│   ├── Common.ps1            # 設定載入 + 路徑轉換 + preflight + image 確認
 │   ├── PromptInjection.ps1   # 隱藏字元 + AI 設定檔注入偵測
 │   └── Report.ps1            # JSON 解析 + Markdown 報告
+├── tests/                    # Pester 5 單元測試
+├── docs/architecture.md      # 跨平台演進方向
 ├── docker-compose.yml        # 單獨執行各工具
 └── results/                  # 掃描輸出（gitignored）
 ```
+
+> 開發前請閱讀 [`CLAUDE.md`](CLAUDE.md)（含 Windows/PowerShell 關鍵陷阱）與
+> [`docs/architecture.md`](docs/architecture.md)（跨平台演進方向）。
