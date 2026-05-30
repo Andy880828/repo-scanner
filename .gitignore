@@ -1,0 +1,24 @@
+# 掃描結果輸出
+*.log
+*.txt
+results/
+reports/
+output/
+
+# 環境變數
+.env
+.env.*
+
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+.docker/
